@@ -1,6 +1,8 @@
 # Coverage-Aware Guardrails
 ### A statistically calibrated Responsible AI Checker — Accenture Innovation Challenge 2026, Round 2, Track: ControlPlane.ai
 
+**🔗 Live demo:** [coverage-aware-guardrails.streamlit.app](https://coverage-aware-guardrails-dwuy4twdkxehhtjrvbkvgx.streamlit.app/)
+
 ## What this is
 
 Most enterprise AI guardrails threshold a raw, uncalibrated "confidence" score from a
