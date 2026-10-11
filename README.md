@@ -1,93 +1,76 @@
 # Coverage-Aware Guardrails
-### A statistically calibrated Responsible AI Checker — Accenture Innovation Challenge 2026, Round 2, Track: ControlPlane.ai
 
-**🔗 Live demo:** [coverage-aware-guardrails.streamlit.app](https://coverage-aware-guardrails-dwuy4twdkxehhtjrvbkvgx.streamlit.app/)
+A calibrated Responsible AI checker. Built for the Accenture Innovation Challenge 2026, Round 2 (ControlPlane.ai track).
 
-## What this is
+**Live demo:** [coverage-aware-guardrails.streamlit.app](https://coverage-aware-guardrails-dwuy4twdkxehhtjrvbkvgx.streamlit.app/) &nbsp;|&nbsp; **Business proposal:** [`business_proposal.md`](business_proposal.md) &nbsp;|&nbsp; **Built on:** [SSRN 7300198](https://doi.org/10.2139/ssrn.7300198)
 
-Most enterprise AI guardrails threshold a raw, uncalibrated "confidence" score from a
-secondary judge model. That score has no guaranteed relationship to true risk, and a
-single global threshold silently over-flags some use cases while under-flagging others.
+## The problem
 
-This prototype replaces the naive threshold with a **conformal calibration layer**: a
-decision threshold calibrated per use-case bucket so the resulting allow/edit/review/block
-decision carries a **finite-sample, distribution-free guarantee** on the miss rate (letting
-a genuinely risky response through) — verified empirically on held-out data, not asserted.
+Most AI guardrails block or allow a response by thresholding a raw "confidence" score from a judge model. That score has no guaranteed link to real risk, and one global threshold over-flags some use cases while under-flagging others.
 
-It builds directly on prior published work calibrating time-series foundation models
-([SSRN 7300198](https://doi.org/10.2139/ssrn.7300198)), where the same phenomenon —
-a single global calibration silently failing across regimes — motivated per-regime
-conformal calibration. Here, "regime" becomes "use case" (customer-facing vs. internal).
+## The idea
 
-## Architecture
+Calibrate the decision threshold **separately for each use case** with Conformal Risk Control (Angelopoulos, Bates, Candes, Lei, 2022). This gives a bound on the **expected miss rate**: how often a truly risky response gets through. It needs no assumption that the raw score is a real probability. The same idea comes from my earlier paper, where one global calibration failed across volatility regimes. Here "regime" becomes "use case" (customer-facing vs. internal).
 
 ```
-AI Response → Detection Layer (parallel scorers) → Conformal Calibration Layer
-            → Tiered Decision (allow/edit/review/block) → Feedback Loop (adaptive CP)
+AI response -> detector scores -> conformal calibration -> allow / edit / review / block -> adaptive feedback loop
 ```
 
-See `business_proposal.md` for the full write-up (problem framing, business case,
-roadmap, risks & mitigations).
+## Results (simulated data, dashboard defaults)
 
-## What's implemented in this prototype
+Setup: 3,000 simulated responses (1,500 per use case), random 50/50 calibration/test split, seed 42, ensemble detector score. Risk rates are 8% (customer-facing) and 15% (internal copilot). Targets: miss rate at most 5% and 15%.
 
-- `data/simulate.py` — simulates AI responses across two use-case buckets
-  (`customer_facing`, `internal_copilot`) with injected ground-truth risk labels and
-  deliberately different, bucket-specific noise/bias in the raw detector scores —
-  demonstrating why a global threshold fails.
-- `core/conformal.py` — **Conformal Risk Control** (Angelopoulos, Bates, Candès, Lei,
-  2022) calibration of the block threshold to guarantee miss rate ≤ target α, plus a
-  quantile-based allow threshold to control over-flagging of safe responses. Calibrated
-  separately per bucket. Coverage is reported with a 95% Wilson confidence interval on
-  the test-set miss rate, not a fixed-slack pass/fail — CRC's guarantee is on the
-  *expected* miss rate over calibration-split randomness, and the CI makes that honest.
-- `core/decision.py` — tiered decision logic (allow / edit / review / block) from the
-  calibrated thresholds, plus an **online adaptive heuristic** (Adaptive-Conformal-Inference-
-  style) for threshold movement under drift — explicitly labeled as a heuristic in the
-  dashboard, since its trailing-window quantile re-derivation does not carry the same
-  finite-sample guarantee as the CRC calibration in Section 2.
-- `core/baselines.py` — baseline comparison: a pooled global threshold vs. an uncorrected
-  per-bucket empirical quantile vs. this project's per-bucket CRC, evaluated on the same
-  held-out split, so the value of per-bucket + finite-sample-corrected calibration is
-  demonstrated rather than asserted.
-- `core/robustness.py` — repeats the full simulate → calibrate → evaluate pipeline across
-  many seeds and reports mean/std/range of the test miss rate per bucket, so results
-  aren't reported from a single lucky draw.
-- `app.py` — Streamlit dashboard: (1) shows why a global threshold fails, (2) shows
-  calibrated thresholds and verifies the coverage guarantee (with CI) on held-out data,
-  (3) shows the decision-tier breakdown, (4) simulates a distribution shift mid-stream
-  and shows the adaptive heuristic pulling the miss rate back toward target, (5) a
-  baseline comparison table, (6) a repeated-seed robustness check, (7) an audit-trail
-  sample.
+**One run (seed 42), miss rate on the test split:**
 
-## Running it
+| Method | Customer-facing (target 5%) | Internal copilot (target 15%) |
+|---|---:|---:|
+| Global threshold (pooled) | 7.0% | 11.3% |
+| Per-bucket empirical quantile | 7.0% | 13.0% |
+| Per-bucket Conformal Risk Control | 7.0% | 13.0% |
+
+On this single run the customer-facing miss rate (7.0%) is above its 5% target, and all three methods land close to each other. The guarantee is about the *average*, so I also repeated the whole pipeline across seeds.
+
+**60 repeated runs, test miss rate:**
+
+| Use case | Target | Mean | Std | Min to max |
+|---|---:|---:|---:|---|
+| Customer-facing | 5% | 5.05% | 3.85 pts | 0.0% to 15.2% |
+| Internal copilot | 15% | 16.05% | 4.88 pts | 4.5% to 26.4% |
+
+The average tracks the target, but a single run can be far off. Each test bucket has few truly risky cases, so the miss rate is noisy. This is why the dashboard reports a confidence interval and a multi-seed check instead of a single number.
+
+**What conformal calibration adds on this data:** a controlled threshold per use case and a "review / edit" band between allow and block (1.1% and 10.8% of responses in the two buckets on seed 42). It did not clearly beat the simpler per-bucket baseline on miss rate in the single run.
+
+## What is in the repo
+
+| File | Purpose |
+|---|---|
+| `data/simulate.py` | Simulates responses for two use-case buckets with ground-truth risk labels and bucket-specific detector noise |
+| `core/conformal.py` | Conformal Risk Control threshold per bucket, plus an allow threshold that limits over-flagging; 95% Wilson interval on the test miss rate |
+| `core/decision.py` | Tiered decisions (allow / edit / review / block) and an online adaptive heuristic for drift. The heuristic is labelled as such because it does not carry the finite-sample guarantee |
+| `core/baselines.py` | Global threshold vs. per-bucket quantile vs. per-bucket CRC, on the same test split |
+| `core/robustness.py` | Repeats simulate, calibrate and evaluate across many seeds |
+| `app.py` | Streamlit dashboard with seven sections: why a global threshold fails, coverage check with interval, decision tiers, drift simulation, baseline table, robustness check, audit trail |
+
+## Run it
 
 ```bash
 pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Adjust the per-use-case α (risk tolerance) and the over-flag tolerance live in the
-sidebar — this is the governance/policy layer described in the proposal.
+Risk tolerance per use case and the over-flag tolerance are sliders in the sidebar. This is the "governance policy" layer from the proposal.
 
-## Minimum expectations addressed
+## Limits and next steps
 
-- Detection techniques: heuristic scoring streams simulating judge + retrieval-verification
-  detectors (Section 1 of `app.py`).
-- Decision logic: confidence scoring → calibrated risk bands → tiered response (Section 3).
-- Governance: per-use-case, sidebar-configurable policy (α, over-flag tolerance).
-- Feedback loop: adaptive online heuristic under simulated drift (Section 4), clearly
-  scoped as a heuristic rather than a formal re-derivation of the CRC guarantee.
-- Metrics & monitoring: empirical miss rate vs. target with a 95% CI, over-flag rate,
-  baseline comparison, and repeated-seed robustness (Sections 2, 5, 6).
-
-## What's simplified / next steps
-
-This is a Phase 0 prototype on simulated data with a single ensemble detector score.
-See `business_proposal.md` §5 (Phased Roadmap) for how this extends to real bias/PII
-detector streams, a fully re-derived CRC threshold inside the adaptive loop, multi-turn/
-agentic compounding risk, and a real labeled pilot dataset.
+- Phase 0 prototype on **simulated** data with a single ensemble detector score. Real detectors and a real labelled pilot set are the next step.
+- The guarantee is on expected miss rate under exchangeable data. It does not cover a single run or a drifting stream.
+- The adaptive loop is a heuristic. Re-deriving the CRC threshold inside the loop is listed in the roadmap in `business_proposal.md` (section 5).
 
 ## Author
 
-Yash Chitransh
+Yash Chitransh, M.Sc. Mathematics & Scientific Computing, NIT Warangal. [LinkedIn](https://www.linkedin.com/in/yash-chitransh-4b108b2aa)
+
+## License
+
+MIT, see `LICENSE`.
